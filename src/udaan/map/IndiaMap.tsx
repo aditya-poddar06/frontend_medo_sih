@@ -102,10 +102,10 @@ export function IndiaMap({
 
     viewer.scene.globe.enableLighting = false;
     viewer.scene.fog.enabled = false;
-    viewer.scene.skyAtmosphere.show = false;
-    viewer.scene.sun.show = false;
-    viewer.scene.moon.show = false;
-    viewer.scene.skyBox.show = false;
+    if (viewer.scene.skyAtmosphere) viewer.scene.skyAtmosphere.show = false;
+    if (viewer.scene.sun) viewer.scene.sun.show = false;
+    if (viewer.scene.moon) viewer.scene.moon.show = false;
+    if (viewer.scene.skyBox) viewer.scene.skyBox.show = false;
     viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#E8E4DE');
     viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#D9D4CC');
     viewer.targetFrameRate = 60;
