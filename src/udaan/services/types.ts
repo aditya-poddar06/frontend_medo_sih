@@ -129,3 +129,34 @@ export interface LiveFlight {
   onGround: boolean;
   lastContact: number;
 }
+
+/* ── Heat Map ── */
+
+export type HeatmapMetric =
+  | 'fare_pressure'
+  | 'avg_fare'
+  | 'mom_change'
+  | 'yoy_change'
+  | 'volatility'
+  | 'observation_density';
+
+export interface HeatmapCell {
+  id: string;
+  lat: number;
+  lon: number;
+  /** Normalized fare-pressure value 0.0–1.0 */
+  value: number;
+  avg_fare: number;
+  mom_change: number;
+  observation_count: number;
+  nearest_airport: string;
+}
+
+export interface HeatmapResponse {
+  metric: HeatmapMetric;
+  range: TimeRange;
+  dataState: DataState;
+  updated_at: string;
+  cells: HeatmapCell[];
+}
+

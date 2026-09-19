@@ -109,3 +109,68 @@
   pointer-events: none;
   z-index: 5;
 }
+
+/* ── Heat map legend ── */
+.udaan-heat-legend {
+  position: absolute;
+  bottom: 14px;
+  left: 14px;
+  z-index: 6;
+  background: rgba(7, 27, 56, 0.88);
+  color: #fff;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-family: var(--udaan-font-mono);
+  min-width: 170px;
+  max-width: 210px;
+  pointer-events: auto;
+}
+.heat-legend-title {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.65);
+  margin-bottom: 6px;
+}
+.heat-legend-bar {
+  height: 8px;
+  border-radius: 4px;
+  background: linear-gradient(
+    to right,
+    rgb(45, 106, 79) 0%,
+    rgb(82, 183, 136) 25%,
+    rgb(233, 196, 106) 50%,
+    rgb(231, 111, 81) 70%,
+    rgb(193, 18, 31) 100%
+  );
+  margin-bottom: 4px;
+}
+.heat-legend-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+/* ── Regional insight card ── */
+.udaan-regional-insight {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--udaan-border);
+}
+
+/* ── Mobile overrides ── */
+@media (max-width: 768px) {
+  .udaan-heat-legend {
+    min-width: 140px;
+    max-width: 170px;
+    padding: 6px 8px;
+    bottom: 8px;
+    left: 8px;
+  }
+  .heat-legend-title { font-size: 8px; }
+  .heat-legend-labels { font-size: 8px; }
+  .heat-legend-bar { height: 6px; }
+}
+

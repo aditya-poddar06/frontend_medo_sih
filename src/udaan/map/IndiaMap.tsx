@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import * as Cesium from 'cesium';
 import { config } from '@udaan/app/config';
-import type { Airport, LiveFlight, RouteSummary } from '@udaan/services/types';
+import type { Airport, HeatmapCell, LiveFlight, RouteSummary } from '@udaan/services/types';
 import { upsertAirportLayer } from './AirportLayer';
 import { upsertRouteLayer } from './RouteLayer';
 import {
@@ -10,10 +10,13 @@ import {
   tickAircraftInterpolation,
   upsertAircraftLayer,
 } from './AircraftLayer';
+import { clearHeatMapLayer, pressureLabel, upsertHeatMapLayer } from './HeatMapLayer';
 import { flyBackToIndia, flyToRoute, setIndiaTopDown } from './CameraController';
 import { isInCorridor, LIVE_FLIGHT_CORRIDOR_RADIUS_KM } from './corridorFilter';
 import { formatInr, formatPct, routeKey } from '@udaan/state/dashboard';
 import '@udaan/styles/map.css';
+
+export type MapMode = 'route' | 'heat';
 
 export interface IndiaMapProps {
   airports: Airport[];
@@ -26,6 +29,14 @@ export interface IndiaMapProps {
   liveFlights: LiveFlight[];
   onSelectRoute: (origin: string, destination: string) => void;
   onSelectAirport: (iata: string) => void;
+  /** Map visualization mode. */
+  mapMode: MapMode;
+  /** Heat map cells (only used when mapMode === 'heat'). */
+  heatmapCells: HeatmapCell[];
+  /** Currently selected heat cell ID. */
+  selectedCellId: string | null;
+  /** Callback when a heat cell is clicked. */
+  onSelectCell: (cellId: string, cell: HeatmapCell) => void;
 }
 
 export function IndiaMap({
@@ -38,6 +49,10 @@ export function IndiaMap({
   liveFlights,
   onSelectRoute,
   onSelectAirport,
+  mapMode,
+  heatmapCells,
+  selectedCellId,
+  onSelectCell,
 }: IndiaMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<Cesium.Viewer | null>(null);
@@ -49,6 +64,10 @@ export function IndiaMap({
     focusAirport,
     onSelectRoute,
     onSelectAirport,
+    mapMode,
+    heatmapCells,
+    selectedCellId,
+    onSelectCell,
   });
   propsRef.current = {
     airports,
@@ -58,9 +77,14 @@ export function IndiaMap({
     focusAirport,
     onSelectRoute,
     onSelectAirport,
+    mapMode,
+    heatmapCells,
+    selectedCellId,
+    onSelectCell,
   };
   const hoveredRef = useRef<string | null>(null);
   const prevRouteKeyRef = useRef<string | null>(null);
+  const prevMapModeRef = useRef<MapMode>(mapMode);
   const [tooltip, setTooltip] = useState<{
     x: number;
     y: number;
@@ -132,12 +156,13 @@ export function IndiaMap({
         setTooltip(null);
         if (hoveredRef.current) {
           hoveredRef.current = null;
-          paintRoutes(null);
+          if (propsRef.current.mapMode === 'route') paintRoutes(null);
         }
         return;
       }
       const props = picked.id.properties;
       const kind = props.kind?.getValue?.() ?? props.kind;
+
       if (kind === 'route') {
         const origin = String(props.origin?.getValue?.() ?? props.origin);
         const destination = String(props.destination?.getValue?.() ?? props.destination);
@@ -157,15 +182,34 @@ export function IndiaMap({
         });
         if (hoveredRef.current !== key) {
           hoveredRef.current = key;
-          paintRoutes(key);
+          if (propsRef.current.mapMode === 'route') paintRoutes(key);
         } else {
           viewer.scene.requestRender();
         }
+      } else if (kind === 'heatcell') {
+        const airport = String(props.nearest_airport?.getValue?.() ?? props.nearest_airport);
+        const fare = Number(props.avg_fare?.getValue?.() ?? props.avg_fare);
+        const mom = Number(props.mom_change?.getValue?.() ?? props.mom_change);
+        const obs = Number(props.observation_count?.getValue?.() ?? props.observation_count);
+        const label = String(props.pressureLabel?.getValue?.() ?? props.pressureLabel);
+        setTooltip({
+          x: movement.endPosition.x,
+          y: movement.endPosition.y,
+          lines: [
+            `${airport} region`,
+            `Nearest airport: ${airport}`,
+            `Avg fare  ${formatInr(fare)}`,
+            `MoM  ${formatPct(mom)}`,
+            `Observations  ${obs.toLocaleString('en-IN')}`,
+            `Pressure  ${label}`,
+          ],
+        });
+        hoveredRef.current = null;
       } else {
         setTooltip(null);
         if (hoveredRef.current) {
           hoveredRef.current = null;
-          paintRoutes(null);
+          if (propsRef.current.mapMode === 'route') paintRoutes(null);
         }
       }
     }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
@@ -209,38 +253,90 @@ export function IndiaMap({
             },
           });
         }
+      } else if (kind === 'heatcell') {
+        setAircraftInfo(null);
+        const cellId = String(props.cellId?.getValue?.() ?? props.cellId);
+        const cell: HeatmapCell = {
+          id: cellId,
+          lat: Number(props.lat?.getValue?.() ?? props.lat),
+          lon: Number(props.lon?.getValue?.() ?? props.lon),
+          value: Number(props.value?.getValue?.() ?? props.value),
+          avg_fare: Number(props.avg_fare?.getValue?.() ?? props.avg_fare),
+          mom_change: Number(props.mom_change?.getValue?.() ?? props.mom_change),
+          observation_count: Number(props.observation_count?.getValue?.() ?? props.observation_count),
+          nearest_airport: String(props.nearest_airport?.getValue?.() ?? props.nearest_airport),
+        };
+        p.onSelectCell(cellId, cell);
       }
     }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 
     return () => {
       handler.destroy();
       clearAircraftLayer(viewer);
+      clearHeatMapLayer(viewer);
       viewer.destroy();
       viewerRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Update airport markers & route layer when data changes
+  // ── Mode switch: clean up old mode, set up new mode ──
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer || viewer.isDestroyed()) return;
-    const ends = selectedRouteKey ? selectedRouteKey.split('-') : [];
-    upsertAirportLayer(viewer, airports, focusAirport, ends);
-    // Only show selected route
-    const routesToShow = selectedRoute ? [selectedRoute] : [];
-    upsertRouteLayer(
-      viewer,
-      routesToShow,
-      airports,
-      selectedRouteKey,
-      focusAirport,
-      hoveredRef.current,
-    );
-    viewer.scene.requestRender();
-  }, [airports, routes, selectedRoute, selectedRouteKey, focusAirport]);
+    const prev = prevMapModeRef.current;
+    prevMapModeRef.current = mapMode;
 
-  // Camera focus on route selection / deselection
+    if (prev === mapMode) return; // no switch
+
+    // Clean up old mode
+    if (prev === 'heat') {
+      clearHeatMapLayer(viewer);
+    }
+    if (prev === 'route') {
+      // Routes will be re-rendered by the route effect; just clear aircraft
+      clearAircraftLayer(viewer);
+    }
+    viewer.scene.requestRender();
+  }, [mapMode]);
+
+  // ── Route mode: update airports & routes ──
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || viewer.isDestroyed()) return;
+
+    if (mapMode === 'route') {
+      // Full route-mode rendering
+      const ends = selectedRouteKey ? selectedRouteKey.split('-') : [];
+      upsertAirportLayer(viewer, airports, focusAirport, ends);
+      const routesToShow = selectedRoute ? [selectedRoute] : [];
+      upsertRouteLayer(viewer, routesToShow, airports, selectedRouteKey, focusAirport, hoveredRef.current);
+      // Ensure heat layer is cleaned up
+      clearHeatMapLayer(viewer);
+    } else {
+      // Heat mode: show airports with reduced emphasis, selected route only
+      upsertAirportLayer(viewer, airports, focusAirport, []);
+      const routesToShow = selectedRoute ? [selectedRoute] : [];
+      upsertRouteLayer(viewer, routesToShow, airports, selectedRouteKey, focusAirport, null);
+      // Clear aircraft in heat mode
+      clearAircraftLayer(viewer);
+    }
+    viewer.scene.requestRender();
+  }, [airports, routes, selectedRoute, selectedRouteKey, focusAirport, mapMode]);
+
+  // ── Heat mode: update heat layer ──
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || viewer.isDestroyed()) return;
+    if (mapMode !== 'heat') {
+      clearHeatMapLayer(viewer);
+      return;
+    }
+    upsertHeatMapLayer(viewer, heatmapCells, selectedCellId);
+    viewer.scene.requestRender();
+  }, [mapMode, heatmapCells, selectedCellId]);
+
+  // ── Camera focus on route selection / deselection ──
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer || viewer.isDestroyed()) return;
@@ -248,7 +344,6 @@ export function IndiaMap({
     prevRouteKeyRef.current = selectedRouteKey;
 
     if (selectedRouteKey && selectedRouteKey !== prevKey) {
-      // Find the airports for this route
       const parts = selectedRouteKey.split('-');
       if (parts.length === 2) {
         const originAirport = airports.find(a => a.iata === parts[0]);
@@ -258,16 +353,15 @@ export function IndiaMap({
         }
       }
     } else if (!selectedRouteKey && prevKey) {
-      // Route cleared, return to India overview
       flyBackToIndia(viewer);
     }
   }, [selectedRouteKey, airports]);
 
-  // Live aircraft layer with corridor filtering
+  // ── Live aircraft layer with corridor filtering (route mode only) ──
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer || viewer.isDestroyed()) return;
-    if (!liveFlightsEnabled) {
+    if (!liveFlightsEnabled || mapMode !== 'route') {
       clearAircraftLayer(viewer);
       viewer.scene.requestRender();
       return;
@@ -312,7 +406,7 @@ export function IndiaMap({
     };
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
-  }, [liveFlightsEnabled, liveFlights, selectedRouteKey, airports]);
+  }, [liveFlightsEnabled, liveFlights, selectedRouteKey, airports, mapMode]);
 
   return (
     <div className="map-stage">
@@ -350,8 +444,20 @@ export function IndiaMap({
             ))}
         </div>
       )}
-      {liveFlightsEnabled && liveFlights.length === 0 && (
+      {mapMode === 'route' && liveFlightsEnabled && liveFlights.length === 0 && (
         <div className="udaan-no-flights">No live aircraft currently available in this view.</div>
+      )}
+      {mapMode === 'heat' && (
+        <div className="udaan-heat-legend">
+          <div className="heat-legend-title">AIRFARE PRESSURE</div>
+          <div className="heat-legend-bar" />
+          <div className="heat-legend-labels">
+            <span>Cooling</span>
+            <span>Normal</span>
+            <span>Elevated</span>
+            <span>High</span>
+          </div>
+        </div>
       )}
     </div>
   );

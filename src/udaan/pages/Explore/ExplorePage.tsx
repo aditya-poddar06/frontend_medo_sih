@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { IndiaMap } from '@udaan/map/IndiaMap';
+import type { MapMode } from '@udaan/map/IndiaMap';
 import { ScraperBrowserPanel } from '@udaan/components/browser/ScraperBrowserPanel';
 import { BookingWindowChart, FareTrendChart } from '@udaan/components/charts/Charts';
 import { getAirports, getExploreDashboard, getRouteDetails } from '@udaan/services/explore';
+import { getHeatmapData } from '@udaan/services/heatmap';
 import { getLiveFlights } from '@udaan/services/liveFlights';
-import type { Airport, ExploreDashboard, LiveFlight, RouteSummary, TimeRange } from '@udaan/services/types';
+import type { Airport, ExploreDashboard, HeatmapCell, HeatmapResponse, LiveFlight, RouteSummary, TimeRange } from '@udaan/services/types';
+import { pressureLabel } from '@udaan/map/HeatMapLayer';
 import { applyPlaybackFrame } from '@udaan/map/HistoricalPlayback';
 import {
   bookingWindowHuman,
@@ -44,6 +47,10 @@ export function ExplorePage({ searchQuery }: Props) {
   const [liveOn, setLiveOn] = useState(false);
   const [flights, setFlights] = useState<LiveFlight[]>([]);
   const [airports, setAirports] = useState<Airport[]>([]);
+  const [mapMode, setMapMode] = useState<MapMode>('route');
+  const [heatmapData, setHeatmapData] = useState<HeatmapResponse | null>(null);
+  const [selectedCellId, setSelectedCellId] = useState<string | null>(null);
+  const [regionalInsight, setRegionalInsight] = useState<HeatmapCell | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -89,6 +96,22 @@ export function ExplorePage({ searchQuery }: Props) {
       setFocusAirport(parsed.airport.iata);
     }
   }, [searchQuery, airports, dash, selectRoute]);
+
+  // ── Heatmap data fetch ──
+  useEffect(() => {
+    if (mapMode !== 'heat') return;
+    let cancelled = false;
+    void (async () => {
+      const data = await getHeatmapData(range, 'fare_pressure');
+      if (!cancelled) setHeatmapData(data);
+    })();
+    return () => { cancelled = true; };
+  }, [mapMode, range]);
+
+  const handleSelectCell = useCallback((cellId: string, cell: HeatmapCell) => {
+    setSelectedCellId(cellId);
+    setRegionalInsight(cell);
+  }, []);
 
   useEffect(() => {
     if (!liveOn) {
@@ -173,14 +196,24 @@ export function ExplorePage({ searchQuery }: Props) {
       </div>
 
       <div className="explore-toolbar">
-        <div className="seg" role="group" aria-label="Visualization mode">
+        <div className="seg" role="group" aria-label="Map mode">
           <button
             type="button"
-            className={heroView === 'map' ? 'active' : ''}
-            onClick={() => setHeroView('map')}
+            className={mapMode === 'route' && heroView === 'map' ? 'active' : ''}
+            onClick={() => { setMapMode('route'); setHeroView('map'); }}
           >
-            Airfare Map
+            Route View
           </button>
+          <button
+            type="button"
+            className={mapMode === 'heat' && heroView === 'map' ? 'active' : ''}
+            onClick={() => { setMapMode('heat'); setHeroView('map'); }}
+          >
+            Heat Map
+          </button>
+        </div>
+
+        <div className="seg" role="group" aria-label="Panel mode">
           <button
             type="button"
             className={heroView === 'browser' ? 'active' : ''}
@@ -203,17 +236,24 @@ export function ExplorePage({ searchQuery }: Props) {
           ))}
         </div>
 
-        <div className="legend-row">
-          <span>
-            <i className="legend-dot rising" /> Rising
-          </span>
-          <span>
-            <i className="legend-dot falling" /> Falling
-          </span>
-          <span>
-            <i className="legend-dot stable" /> Stable
-          </span>
-        </div>
+        {mapMode === 'route' && (
+          <div className="legend-row">
+            <span>
+              <i className="legend-dot rising" /> Rising
+            </span>
+            <span>
+              <i className="legend-dot falling" /> Falling
+            </span>
+            <span>
+              <i className="legend-dot stable" /> Stable
+            </span>
+          </div>
+        )}
+        {mapMode === 'heat' && heatmapData?.dataState === 'MOCK' && (
+          <div className="legend-row">
+            <span className="badge-mock">MOCK DATA</span>
+          </div>
+        )}
 
         <label className="toolbar-live">
           <input type="checkbox" checked={liveOn} onChange={(e) => setLiveOn(e.target.checked)} />
@@ -237,6 +277,10 @@ export function ExplorePage({ searchQuery }: Props) {
               liveFlights={flights}
               onSelectRoute={(o, d) => void selectRoute(o, d)}
               onSelectAirport={(iata) => setFocusAirport(iata)}
+              mapMode={mapMode}
+              heatmapCells={heatmapData?.cells ?? []}
+              selectedCellId={selectedCellId}
+              onSelectCell={handleSelectCell}
             />
             <div className="playback-bar">
               <button
@@ -315,6 +359,28 @@ export function ExplorePage({ searchQuery }: Props) {
           >
             View full route analysis →
           </button>
+          {mapMode === 'heat' && regionalInsight && (
+            <div className="udaan-regional-insight">
+              <div className="micro-label">Regional insight</div>
+              <div className="route-title">{regionalInsight.nearest_airport} region</div>
+              <div className="stat-row">
+                <span>Pressure</span>
+                <strong>{pressureLabel(regionalInsight.value)}</strong>
+              </div>
+              <div className="stat-row">
+                <span>Avg fare</span>
+                <strong>{formatInr(regionalInsight.avg_fare)}</strong>
+              </div>
+              <div className="stat-row">
+                <span>MoM</span>
+                <strong>{formatPct(regionalInsight.mom_change)}</strong>
+              </div>
+              <div className="stat-row">
+                <span>Observations</span>
+                <strong>{regionalInsight.observation_count.toLocaleString('en-IN')}</strong>
+              </div>
+            </div>
+          )}
         </aside>
       </div>
 
