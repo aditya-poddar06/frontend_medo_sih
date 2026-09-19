@@ -120,10 +120,12 @@ export interface ScraperStatus {
 export interface LiveFlight {
   id: string;
   callsign: string;
+  icao24: string;
   lat: number;
   lon: number;
   alt: number;
   heading: number;
   velocity: number;
   onGround: boolean;
+  lastContact: number;
 }

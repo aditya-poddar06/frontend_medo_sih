@@ -53,3 +53,39 @@ export function flyToAirport(
     duration: 1.2,
   });
 }
+
+/**
+ * Fly the camera to frame a route between two airports with enough context.
+ */
+export function flyToRoute(
+  viewer: Cesium.Viewer,
+  originLon: number,
+  originLat: number,
+  destLon: number,
+  destLat: number,
+): void {
+  const centerLon = (originLon + destLon) / 2;
+  const centerLat = (originLat + destLat) / 2;
+  // Estimate height from the distance between airports
+  const latSpan = Math.abs(originLat - destLat);
+  const lonSpan = Math.abs(originLon - destLon);
+  const maxSpan = Math.max(latSpan, lonSpan);
+  // Scale height so the route fits comfortably: ~110km per degree, aim for padding
+  const height = Math.max(600_000, Math.min(3_200_000, maxSpan * 130_000));
+
+  viewer.camera.flyTo({
+    destination: Cesium.Cartesian3.fromDegrees(centerLon, centerLat, height),
+    orientation: {
+      heading: 0,
+      pitch: Cesium.Math.toRadians(-90),
+      roll: 0,
+    },
+    duration: 1.4,
+  });
+}
+
+/** Smoothly return to India overview. */
+export function flyBackToIndia(viewer: Cesium.Viewer): void {
+  flyToIndia(viewer, 1.2);
+}
+

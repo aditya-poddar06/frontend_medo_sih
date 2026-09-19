@@ -6,16 +6,20 @@ import { upsertAirportLayer } from './AirportLayer';
 import { upsertRouteLayer } from './RouteLayer';
 import {
   clearAircraftLayer,
+  getFlightForEntity,
   tickAircraftInterpolation,
   upsertAircraftLayer,
 } from './AircraftLayer';
-import { setIndiaTopDown } from './CameraController';
+import { flyBackToIndia, flyToRoute, setIndiaTopDown } from './CameraController';
+import { isInCorridor, LIVE_FLIGHT_CORRIDOR_RADIUS_KM } from './corridorFilter';
 import { formatInr, formatPct, routeKey } from '@udaan/state/dashboard';
 import '@udaan/styles/map.css';
 
 export interface IndiaMapProps {
   airports: Airport[];
   routes: RouteSummary[];
+  /** Only the selected route to render (or null for no route lines). */
+  selectedRoute: RouteSummary | null;
   selectedRouteKey: string | null;
   focusAirport: string | null;
   liveFlightsEnabled: boolean;
@@ -27,6 +31,7 @@ export interface IndiaMapProps {
 export function IndiaMap({
   airports,
   routes,
+  selectedRoute,
   selectedRouteKey,
   focusAirport,
   liveFlightsEnabled,
@@ -39,6 +44,7 @@ export function IndiaMap({
   const propsRef = useRef({
     airports,
     routes,
+    selectedRoute,
     selectedRouteKey,
     focusAirport,
     onSelectRoute,
@@ -47,16 +53,23 @@ export function IndiaMap({
   propsRef.current = {
     airports,
     routes,
+    selectedRoute,
     selectedRouteKey,
     focusAirport,
     onSelectRoute,
     onSelectAirport,
   };
   const hoveredRef = useRef<string | null>(null);
+  const prevRouteKeyRef = useRef<string | null>(null);
   const [tooltip, setTooltip] = useState<{
     x: number;
     y: number;
     lines: string[];
+  } | null>(null);
+  const [aircraftInfo, setAircraftInfo] = useState<{
+    x: number;
+    y: number;
+    data: Record<string, string>;
   } | null>(null);
 
   useEffect(() => {
@@ -107,7 +120,9 @@ export function IndiaMap({
       const p = propsRef.current;
       const ends = p.selectedRouteKey ? p.selectedRouteKey.split('-') : [];
       upsertAirportLayer(viewer, p.airports, p.focusAirport, ends);
-      upsertRouteLayer(viewer, p.routes, p.airports, p.selectedRouteKey, p.focusAirport, hoveredKey);
+      // Only show selected route, not all routes
+      const routesToShow = p.selectedRoute ? [p.selectedRoute] : [];
+      upsertRouteLayer(viewer, routesToShow, p.airports, p.selectedRouteKey, p.focusAirport, hoveredKey);
       viewer.scene.requestRender();
     };
 
@@ -157,17 +172,43 @@ export function IndiaMap({
 
     handler.setInputAction((click: { position: Cesium.Cartesian2 }) => {
       const picked = viewer.scene.pick(click.position);
-      if (!Cesium.defined(picked) || !picked.id?.properties) return;
+      if (!Cesium.defined(picked) || !picked.id?.properties) {
+        setAircraftInfo(null);
+        return;
+      }
       const props = picked.id.properties;
       const kind = props.kind?.getValue?.() ?? props.kind;
       const p = propsRef.current;
       if (kind === 'route') {
+        setAircraftInfo(null);
         p.onSelectRoute(
           String(props.origin?.getValue?.() ?? props.origin),
           String(props.destination?.getValue?.() ?? props.destination),
         );
       } else if (kind === 'airport') {
+        setAircraftInfo(null);
         p.onSelectAirport(String(props.iata?.getValue?.() ?? props.iata));
+      } else if (kind === 'aircraft') {
+        const entityId = picked.id.id;
+        const flight = getFlightForEntity(entityId);
+        if (flight) {
+          const lastSeen = flight.lastContact
+            ? new Date(flight.lastContact * 1000).toLocaleTimeString()
+            : 'N/A';
+          setAircraftInfo({
+            x: click.position.x,
+            y: click.position.y,
+            data: {
+              Callsign: flight.callsign || '—',
+              ICAO24: flight.icao24 || '—',
+              Altitude: `${Math.round(flight.alt * 3.28084).toLocaleString()} ft`,
+              Speed: `${Math.round(flight.velocity * 1.944)} kts`,
+              Heading: `${Math.round(flight.heading)}°`,
+              'Last update': lastSeen,
+              Source: 'OpenSky Network',
+            },
+          });
+        }
       }
     }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 
@@ -180,22 +221,49 @@ export function IndiaMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Update airport markers & route layer when data changes
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer || viewer.isDestroyed()) return;
     const ends = selectedRouteKey ? selectedRouteKey.split('-') : [];
     upsertAirportLayer(viewer, airports, focusAirport, ends);
+    // Only show selected route
+    const routesToShow = selectedRoute ? [selectedRoute] : [];
     upsertRouteLayer(
       viewer,
-      routes,
+      routesToShow,
       airports,
       selectedRouteKey,
       focusAirport,
       hoveredRef.current,
     );
     viewer.scene.requestRender();
-  }, [airports, routes, selectedRouteKey, focusAirport]);
+  }, [airports, routes, selectedRoute, selectedRouteKey, focusAirport]);
 
+  // Camera focus on route selection / deselection
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || viewer.isDestroyed()) return;
+    const prevKey = prevRouteKeyRef.current;
+    prevRouteKeyRef.current = selectedRouteKey;
+
+    if (selectedRouteKey && selectedRouteKey !== prevKey) {
+      // Find the airports for this route
+      const parts = selectedRouteKey.split('-');
+      if (parts.length === 2) {
+        const originAirport = airports.find(a => a.iata === parts[0]);
+        const destAirport = airports.find(a => a.iata === parts[1]);
+        if (originAirport && destAirport) {
+          flyToRoute(viewer, originAirport.lon, originAirport.lat, destAirport.lon, destAirport.lat);
+        }
+      }
+    } else if (!selectedRouteKey && prevKey) {
+      // Route cleared, return to India overview
+      flyBackToIndia(viewer);
+    }
+  }, [selectedRouteKey, airports]);
+
+  // Live aircraft layer with corridor filtering
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer || viewer.isDestroyed()) return;
@@ -204,7 +272,39 @@ export function IndiaMap({
       viewer.scene.requestRender();
       return;
     }
-    upsertAircraftLayer(viewer, liveFlights, null);
+
+    // Compute corridor membership
+    let corridorIds: Set<string> | undefined;
+    if (selectedRouteKey) {
+      const parts = selectedRouteKey.split('-');
+      if (parts.length === 2) {
+        const originAirport = airports.find(a => a.iata === parts[0]);
+        const destAirport = airports.find(a => a.iata === parts[1]);
+        if (originAirport && destAirport) {
+          corridorIds = new Set<string>();
+          for (const f of liveFlights) {
+            if (
+              isInCorridor(
+                f.lat, f.lon,
+                originAirport.lat, originAirport.lon,
+                destAirport.lat, destAirport.lon,
+                LIVE_FLIGHT_CORRIDOR_RADIUS_KM,
+              )
+            ) {
+              corridorIds.add(f.id);
+            }
+          }
+          if (import.meta.env.DEV) {
+            console.log(
+              `[UDAAN Flight] Corridor ${selectedRouteKey}: ` +
+              `${corridorIds.size}/${liveFlights.length} aircraft in corridor`
+            );
+          }
+        }
+      }
+    }
+
+    upsertAircraftLayer(viewer, liveFlights, null, corridorIds);
     let raf = 0;
     const loop = () => {
       tickAircraftInterpolation(viewer);
@@ -212,7 +312,7 @@ export function IndiaMap({
     };
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
-  }, [liveFlightsEnabled, liveFlights]);
+  }, [liveFlightsEnabled, liveFlights, selectedRouteKey, airports]);
 
   return (
     <div className="map-stage">
@@ -223,6 +323,35 @@ export function IndiaMap({
             <div key={line}>{line}</div>
           ))}
         </div>
+      )}
+      {aircraftInfo && (
+        <div
+          className="udaan-aircraft-info"
+          style={{ left: aircraftInfo.x, top: aircraftInfo.y }}
+        >
+          <div className="aircraft-info-header">
+            <span>✈ {aircraftInfo.data.Callsign}</span>
+            <button
+              type="button"
+              className="aircraft-info-close"
+              onClick={() => setAircraftInfo(null)}
+              aria-label="Close"
+            >
+              ×
+            </button>
+          </div>
+          {Object.entries(aircraftInfo.data)
+            .filter(([key]) => key !== 'Callsign')
+            .map(([key, value]) => (
+              <div className="aircraft-info-row" key={key}>
+                <span className="aircraft-info-label">{key}</span>
+                <span className="aircraft-info-value">{value}</span>
+              </div>
+            ))}
+        </div>
+      )}
+      {liveFlightsEnabled && liveFlights.length === 0 && (
+        <div className="udaan-no-flights">No live aircraft currently available in this view.</div>
       )}
     </div>
   );

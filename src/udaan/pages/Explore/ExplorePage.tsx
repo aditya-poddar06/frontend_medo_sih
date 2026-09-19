@@ -37,6 +37,8 @@ export function ExplorePage({ searchQuery }: Props) {
   const [range, setRange] = useState<TimeRange>('30d');
   const [dash, setDash] = useState<ExploreDashboard | null>(null);
   const [selected, setSelected] = useState<RouteSummary | null>(null);
+  /** Whether the user explicitly selected/searched a route (not auto-selected on load). */
+  const [userSelected, setUserSelected] = useState(false);
   const [focusAirport, setFocusAirport] = useState<string | null>(null);
   const [playbackIndex, setPlaybackIndex] = useState(5);
   const [liveOn, setLiveOn] = useState(false);
@@ -50,6 +52,7 @@ export function ExplorePage({ searchQuery }: Props) {
       if (cancelled) return;
       setDash(data);
       setSelected(data.selectedRoute ?? data.routes[0] ?? null);
+      setUserSelected(false); // auto-selected, not user action
       setAirports(a);
     })();
     return () => {
@@ -60,6 +63,7 @@ export function ExplorePage({ searchQuery }: Props) {
   const selectRoute = useCallback(async (origin: string, destination: string) => {
     const detail = await getRouteDetails(origin, destination);
     setSelected(detail);
+    setUserSelected(true); // explicit user action
     setFocusAirport(null);
     setDash((prev) =>
       prev
@@ -226,7 +230,8 @@ export function ExplorePage({ searchQuery }: Props) {
             <IndiaMap
               airports={airports}
               routes={displayRoutes}
-              selectedRouteKey={routeKey(selected)}
+              selectedRoute={userSelected ? selected : null}
+              selectedRouteKey={userSelected ? routeKey(selected) : null}
               focusAirport={focusAirport}
               liveFlightsEnabled={liveOn}
               liveFlights={flights}

@@ -8,9 +8,13 @@ type Track = {
   prev: MotionSample;
   next: MotionSample;
   entity: Cesium.Entity;
+  flight: LiveFlight;
 };
 
 const tracks = new Map<string, Track>();
+
+/** Cached plane canvases — one per color. */
+const planeCanvasCache = new Map<string, HTMLCanvasElement>();
 
 export function clearAircraftLayer(viewer: Cesium.Viewer): void {
   const ds = viewer.dataSources.getByName(AIRCRAFT_DS)[0];
@@ -22,6 +26,7 @@ export function upsertAircraftLayer(
   viewer: Cesium.Viewer,
   flights: LiveFlight[],
   selectedId: string | null,
+  corridorIds?: Set<string>,
 ): Cesium.CustomDataSource {
   let ds = viewer.dataSources.getByName(AIRCRAFT_DS)[0] as Cesium.CustomDataSource | undefined;
   if (!ds) {
@@ -34,6 +39,7 @@ export function upsertAircraftLayer(
 
   for (const f of flights) {
     seen.add(f.id);
+    const inCorridor = corridorIds?.has(f.id) ?? false;
     const sample: MotionSample = {
       lat: f.lat,
       lon: f.lon,
@@ -43,41 +49,46 @@ export function upsertAircraftLayer(
     };
     let track = tracks.get(f.id);
     if (!track) {
+      const color = inCorridor ? '#0B1F3A' : '#7B8794';
+      const size = inCorridor ? 20 : 16;
       const entity = ds.entities.add({
         id: `ac-${f.id}`,
         name: f.callsign || f.id,
         position: Cesium.Cartesian3.fromDegrees(f.lon, f.lat, f.alt),
         billboard: {
-          image: createPlaneCanvas(),
-          width: 18,
-          height: 18,
+          image: createPlaneCanvas(color),
+          width: size,
+          height: size,
+          // Icon points UP (north) by default. Rotate by -heading to align with true track.
           rotation: Cesium.Math.toRadians(-f.heading),
           alignedAxis: Cesium.Cartesian3.UNIT_Z,
           disableDepthTestDistance: Number.POSITIVE_INFINITY,
         },
-        model:
-          selectedId === f.id
-            ? {
-                uri: '/models/aircraft/airplane.glb',
-                minimumPixelSize: 48,
-                maximumScale: 20000,
-                scale: 1,
-              }
-            : undefined,
-        properties: { kind: 'aircraft', id: f.id },
+        properties: {
+          kind: 'aircraft',
+          id: f.id,
+          callsign: f.callsign,
+          icao24: f.icao24,
+          altitude: f.alt,
+          speed: f.velocity,
+          heading: f.heading,
+          lastContact: f.lastContact,
+          inCorridor,
+        },
       });
-      track = { prev: sample, next: sample, entity };
+      track = { prev: sample, next: sample, entity, flight: f };
       tracks.set(f.id, track);
     } else {
       track.prev = track.next;
       track.next = sample;
-      if (selectedId === f.id && !track.entity.model) {
-        track.entity.model = new Cesium.ModelGraphics({
-          uri: '/models/aircraft/airplane.glb',
-          minimumPixelSize: 48,
-          maximumScale: 20000,
-          scale: 1,
-        });
+      track.flight = f;
+      // Update visual for corridor membership changes
+      if (track.entity.billboard) {
+        const color = inCorridor ? '#0B1F3A' : '#7B8794';
+        const size = inCorridor ? 20 : 16;
+        track.entity.billboard.image = new Cesium.ConstantProperty(createPlaneCanvas(color));
+        track.entity.billboard.width = new Cesium.ConstantProperty(size);
+        track.entity.billboard.height = new Cesium.ConstantProperty(size);
       }
     }
   }
@@ -108,19 +119,48 @@ export function tickAircraftInterpolation(viewer: Cesium.Viewer): void {
   viewer.scene.requestRender();
 }
 
-function createPlaneCanvas(): HTMLCanvasElement {
+/** Get flight data for an aircraft entity by its entity ID. */
+export function getFlightForEntity(entityId: string): LiveFlight | null {
+  // entityId is "ac-{id}", strip the prefix
+  const flightId = entityId.startsWith('ac-') ? entityId.slice(3) : entityId;
+  return tracks.get(flightId)?.flight ?? null;
+}
+
+/**
+ * Create a small dark airplane silhouette on a canvas.
+ * The icon points north (up) by default.
+ */
+function createPlaneCanvas(fillColor = '#0B1F3A'): HTMLCanvasElement {
+  const cached = planeCanvasCache.get(fillColor);
+  if (cached) return cached;
+
   const c = document.createElement('canvas');
   c.width = 32;
   c.height = 32;
   const ctx = c.getContext('2d')!;
   ctx.translate(16, 16);
-  ctx.fillStyle = '#0B1F3A';
+  ctx.fillStyle = fillColor;
   ctx.beginPath();
-  ctx.moveTo(0, -12);
-  ctx.lineTo(8, 10);
-  ctx.lineTo(0, 6);
-  ctx.lineTo(-8, 10);
+  // Airplane shape pointing UP: nose at top, wings sweep back
+  ctx.moveTo(0, -13);    // nose
+  ctx.lineTo(3, -6);     // right fuselage
+  ctx.lineTo(10, 2);     // right wing tip
+  ctx.lineTo(10, 4);     // right wing trailing edge
+  ctx.lineTo(3, 1);      // right wing root
+  ctx.lineTo(2, 8);      // right tail approach
+  ctx.lineTo(5, 11);     // right stabilizer tip
+  ctx.lineTo(5, 12);     // right stabilizer trailing
+  ctx.lineTo(0, 9);      // tail center
+  ctx.lineTo(-5, 12);    // left stabilizer trailing
+  ctx.lineTo(-5, 11);    // left stabilizer tip
+  ctx.lineTo(-2, 8);     // left tail approach
+  ctx.lineTo(-3, 1);     // left wing root
+  ctx.lineTo(-10, 4);    // left wing trailing edge
+  ctx.lineTo(-10, 2);    // left wing tip
+  ctx.lineTo(-3, -6);    // left fuselage
   ctx.closePath();
   ctx.fill();
+
+  planeCanvasCache.set(fillColor, c);
   return c;
 }
