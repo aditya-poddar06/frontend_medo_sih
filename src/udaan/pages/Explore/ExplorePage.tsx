@@ -93,7 +93,16 @@ export function ExplorePage({ searchQuery }: Props) {
       void selectRoute(parsed.origin.iata, parsed.destination.iata);
       setFocusAirport(null);
     } else if (parsed.airport) {
-      setFocusAirport(parsed.airport.iata);
+      // Single airport: focus it AND select the best route from/to it
+      const iata = parsed.airport.iata;
+      setFocusAirport(iata);
+      // Find the highest-weight route involving this airport
+      const matchingRoute = dash.routes
+        .filter(r => r.origin === iata || r.destination === iata)
+        .sort((a, b) => b.weight - a.weight)[0];
+      if (matchingRoute) {
+        void selectRoute(matchingRoute.origin, matchingRoute.destination);
+      }
     }
   }, [searchQuery, airports, dash, selectRoute]);
 

@@ -115,7 +115,7 @@ export function AppHeader({ onSearch, searchValue = '' }: Props) {
             autoComplete="off"
           />
         </form>
-        {showSuggest && (
+        {focused && showSuggest && (
           <div className="udaan-search-suggest" id="udaan-search-suggest" role="listbox">
             {suggestions.airports.length > 0 && (
               <div className="suggest-group">
